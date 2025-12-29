@@ -5,7 +5,9 @@ export const runFifoEngine = (
   card = false
 ) => {
   let holdings = 0;
-  const buyQueue = []; // FIFO lots (OPEN ONLY)
+  let lotCounter = 0;
+
+  const buyQueue = [];
   const output = [];
 
   /* ---------------- DATE NORMALIZATION ---------------- */
@@ -71,17 +73,34 @@ export const runFifoEngine = (
       const price =
         Number(t.netrate) || (t.netAmount && qty ? t.netAmount / qty : 0);
 
-      let profitLoss = null;
-
       /* ---- BUY ---- */
       if (isBuy(t.tranType)) {
+        const lotId = ++lotCounter;
+
         buyQueue.push({
+          lotId,
+          originalQty: qty,
           qty,
           price,
           buyDate: normalizeDate(t.trandate),
+          isActive: true,
         });
 
         holdings += qty;
+
+        output.push({
+          lotId,
+          trandate: t.trandate,
+          tranType: t.tranType,
+          qty,
+          price,
+          netAmount: t.netAmount,
+          holdings,
+          costOfHoldings: getCostOfHoldings(),
+          averageCostOfHoldings: getWAP(),
+          profitLoss: null,
+          isActive: true,
+        });
       }
 
       /* ---- SELL ---- */
@@ -97,24 +116,27 @@ export const runFifoEngine = (
           lot.qty -= used;
           remaining -= used;
 
-          if (lot.qty === 0) buyQueue.shift(); // 🔥 remove closed lot
+          if (lot.qty === 0) {
+            lot.isActive = false; // 🔥 mark inactive
+            buyQueue.shift();
+          }
         }
 
-        profitLoss = qty * price - fifoCost;
         holdings -= qty;
-      }
 
-      output.push({
-        trandate: t.trandate,
-        tranType: t.tranType,
-        qty,
-        price,
-        netAmount: t.netAmount,
-        holdings,
-        costOfHoldings: getCostOfHoldings(),
-        averageCostOfHoldings: getWAP(),
-        profitLoss,
-      });
+        output.push({
+          trandate: t.trandate,
+          tranType: t.tranType,
+          qty,
+          price,
+          netAmount: t.netAmount,
+          holdings,
+          costOfHoldings: getCostOfHoldings(),
+          averageCostOfHoldings: getWAP(),
+          profitLoss: qty * price - fifoCost,
+          isActive: false, // 🔥 mark inactive
+        });
+      }
     }
 
     /* ========== BONUS ========== */
@@ -122,15 +144,21 @@ export const runFifoEngine = (
       const qty = Number(e.data.bonusShare) || 0;
       if (!qty) continue;
 
+      const lotId = ++lotCounter;
+
       buyQueue.push({
+        lotId,
+        originalQty: qty,
         qty,
         price: 0,
         buyDate: normalizeDate(e.data.exDate),
+        isActive: true,
       });
 
       holdings += qty;
 
       output.push({
+        lotId,
         trandate: e.data.exDate,
         tranType: "BONUS",
         qty,
@@ -140,10 +168,11 @@ export const runFifoEngine = (
         costOfHoldings: getCostOfHoldings(),
         averageCostOfHoldings: getWAP(),
         profitLoss: null,
+        isActive: true,
       });
     }
 
-    /* ========== SPLIT (LINE-LEVEL, BACKDATED) ========== */
+    /* ========== SPLIT (REPLACEMENT MODEL – LEDGER & WAP CORRECT) ========== */
     if (e.type === "SPLIT") {
       if (!buyQueue.length) continue;
 
@@ -152,48 +181,86 @@ export const runFifoEngine = (
       if (!ratio1 || !ratio2) continue;
 
       const multiplier = ratio2 / ratio1;
-      const splitDate = normalizeDate(e.data.issueDate);
 
-      for (const lot of buyQueue) {
-        // 🔥 APPLY ONLY TO LOTS BOUGHT BEFORE SPLIT DATE
-        if (lot.buyDate > splitDate) continue;
+      // active lots before split
+      const activeLots = buyQueue.filter((l) => l.isActive);
 
-        const oldQty = lot.qty;
-        const oldPrice = lot.price;
+      // mark old lots & rows inactive
+      for (const oldLot of activeLots) {
+        oldLot.isActive = false;
+        const row = output.find((r) => r.lotId === oldLot.lotId && r.isActive);
+        if (row) row.isActive = false;
+      }
 
-        const newQty = oldQty * multiplier;
-        const newPrice = oldPrice / multiplier;
+      // clear FIFO
+      buyQueue.length = 0;
 
-        // 🔥 INSERT SPLIT ROW AT BUY DATE
-        output.push({
-          trandate: lot.buyDate,
+      // 🔥 running snapshot values
+      let runningHoldings = 0;
+      let runningCost = 0;
+
+      for (const oldLot of activeLots) {
+        const newQty = oldLot.qty * multiplier;
+        const newPrice = oldLot.price / multiplier;
+        const newLotId = ++lotCounter;
+
+        // add new split lot
+        buyQueue.push({
+          lotId: newLotId,
+          originalQty: newQty,
+          qty: newQty,
+          price: newPrice,
+          buyDate: oldLot.buyDate,
+          isActive: true,
+        });
+
+        // update running snapshot
+        runningHoldings += newQty;
+        runningCost += newQty * newPrice;
+
+        const runningWAP =
+          runningHoldings > 0 ? runningCost / runningHoldings : 0;
+
+        // find correct insert index
+        const buyRowIndex = output.findIndex((r) => r.lotId === oldLot.lotId);
+        let insertIndex = output.length;
+
+        for (let i = buyRowIndex + 1; i < output.length; i++) {
+          if (new Date(output[i].trandate) > new Date(oldLot.buyDate)) {
+            insertIndex = i;
+            break;
+          }
+        }
+
+        // insert SPLIT row with 🔥 correct WAP
+        output.splice(insertIndex, 0, {
+          lotId: newLotId,
+          trandate: oldLot.buyDate,
           tranType: "SPLIT",
           qty: newQty,
           price: newPrice,
-          netAmount: 0,
-          holdings: null,
-          costOfHoldings: null,
-          averageCostOfHoldings: null,
+          netAmount: Number((newQty * newPrice).toFixed(2)),
+          holdings: runningHoldings,
+          costOfHoldings: runningCost,
+          averageCostOfHoldings: runningWAP,
           profitLoss: null,
+          isActive: true,
         });
-
-        // mutate FIFO lot
-        lot.qty = newQty;
-        lot.price = newPrice;
       }
 
-      holdings *= multiplier;
+      // final authoritative holdings
+      holdings = runningHoldings;
     }
   }
 
   /* ---------------- CARD MODE ---------------- */
   if (card) {
-    const last = output[output.length - 1] || {};
+    const last = [...output].reverse().find((r) => r.costOfHoldings !== null);
     return {
-      holdingValue: last.costOfHoldings || 0,
-      averageCostOfHoldings: last.averageCostOfHoldings || 0,
+      holdingValue: last?.costOfHoldings || 0,
+      averageCostOfHoldings: last?.averageCostOfHoldings || 0,
     };
   }
 
-  return output.sort((a, b) => new Date(a.trandate) - new Date(b.trandate));
+  return output;
 };
