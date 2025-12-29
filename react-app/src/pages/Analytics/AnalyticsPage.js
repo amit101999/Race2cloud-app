@@ -53,7 +53,7 @@ function AnalyticsPage() {
     }
   };
 
-  const fetchHoldings = async (code,date = asOnDate,page = currentPage,limit = pageSize) => {
+  const fetchHoldings = async (code, date = asOnDate) => {
     if (!code) return;
 
     setAccountCode(code);
@@ -65,14 +65,15 @@ function AnalyticsPage() {
     setSelectedStock(null);
 
     try {
-      const params = new URLSearchParams({ accountCode: code ,page ,limit});
+      const params = new URLSearchParams({ accountCode: code });
       if (date) params.set("asOnDate", date);
       const res = await fetch(
         `${BASE_URL}/analytics/getHoldingsSummarySimple?${params.toString()}`
       );
-      const response = await res.json();
-      if (Array.isArray(response.data)) {
-        setHoldings(response.data);
+      const data = await res.json();
+
+      if (Array.isArray(data)) {
+        setHoldings(data);
       } else {
         console.error("Unexpected holdings response:", data);
         setHoldings([]);

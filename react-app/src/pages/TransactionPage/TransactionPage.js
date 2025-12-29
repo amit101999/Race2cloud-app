@@ -190,7 +190,8 @@ function TransactionPage({ stock, accountCode, asOnDate, onClose }) {
                     <tr key={idx} className={getRowClass(tx.tranType)}>
                       <td>{tx.trandate || "-"}</td>
                       <td>{tx.tranType || "-"}</td>
-                      <td>{formatNumber(tx.qty)}</td>
+                      <td>{formatNumber(tx.qty)}
+                      </td>
                       <td>{Math.trunc(tx.price * 100) / 100}</td>
                       <td>{formatCurrency(tx.netAmount)}</td>
                       <td>{formatNumber(tx.holdings)}</td>
