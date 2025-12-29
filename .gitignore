@@ -1,0 +1,6 @@
+# Logs and debug output
+catalyst-debug.log
+# Generated data directories
+Bonus.csv   
+Transaction.csv
+clientids.csv
