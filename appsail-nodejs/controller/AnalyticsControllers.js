@@ -44,10 +44,6 @@ export const getHoldingsSummarySimple = async (req, res) => {
     if (!accountCode) {
       return res.status(400).json({ message: "Valid accountCode required" });
     }
-    const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Number(req.query.limit) || 20, 50);
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
     const asOnDate = req.query.asOnDate;
     const zcql = app.zcql();
     const batchLimit = 250;
@@ -96,7 +92,7 @@ export const getHoldingsSummarySimple = async (req, res) => {
 
       if (!rows.length) break;
       bonuses.push(...rows.map((r) => r.Bonus || r));
-      if (rows.length < limit) break;
+      if (rows.length < batchLimit) break;
       offset += batchLimit;
     }
 
@@ -173,16 +169,7 @@ export const getHoldingsSummarySimple = async (req, res) => {
     }
 
     result.sort((a, b) => a.stockName.localeCompare(b.stockName));
-    
-    const paginatedData = result.slice(startIndex, endIndex);
-    return res.status(200).json({
-      page,
-      limit,
-      totalRecords: fullResult.length,
-      totalPages: Math.ceil(fullResult.length / limit),
-      data: paginatedData,
-    });
-
+    return res.status(200).json(result);
   } catch (err) {
     console.error("[getHoldingsSummarySimple]", err);
     return res.status(500).json({
